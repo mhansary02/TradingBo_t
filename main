@@ -1,0 +1,1933 @@
+# ================ 0-IMPORTS & SETTINGS ================
+import os
+import logging
+from logging.handlers import RotatingFileHandler
+import time
+import pandas as pd
+import numpy as np
+import ccxt
+from datetime import datetime, timedelta
+from ta.trend import EMAIndicator, MACD
+from ta.momentum import RSIIndicator, StochasticOscillator
+from ta.volatility import BollingerBands, AverageTrueRange
+from telegram import Bot, Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+import threading
+import traceback
+import warnings
+from typing import Dict, List, Tuple, Optional
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
+import joblib
+import json
+import hashlib
+
+warnings.filterwarnings('ignore')
+
+# ================ LOGGER SETUP ================
+class AdvancedLogger:
+    """سیستم لاگ‌گیری هوشمند با قابلیت تحلیل خودکار خطاها"""
+    def __init__(self):
+        self.logger = logging.getLogger('CoinExAISwingTrader')
+        self.logger.setLevel(logging.DEBUG)
+        self.error_patterns = {}
+        self.setup_handlers()
+        
+    def setup_handlers(self):
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s\n'
+            'File: %(pathname)s\nFunction: %(funcName)s\nLine: %(lineno)d\n'
+            'Message: %(message)s\n'
+            '----------------------------------------------------------------------'
+        )
+        
+        # File handler with rotation
+        file_handler = RotatingFileHandler(
+            'ai_swing_trader.log',
+            maxBytes=10*1024*1024,
+            backupCount=5,
+            encoding='utf-8'
+        )
+        file_handler.setFormatter(formatter)
+        file_handler.setLevel(logging.DEBUG)
+        
+        # Console handler
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(formatter)
+        console_handler.setLevel(logging.INFO)
+        
+        if self.logger.hasHandlers():
+            self.logger.handlers.clear()
+        
+        self.logger.addHandler(file_handler)
+        self.logger.addHandler(console_handler)
+    
+    def log_error(self, error: Exception, context: str = ""):
+        """لاگ کردن خطا با تحلیل الگوهای تکراری"""
+        error_hash = hashlib.md5(str(error).encode()).hexdigest()
+        self.error_patterns[error_hash] = self.error_patterns.get(error_hash, 0) + 1
+        
+        log_msg = f"{context} - {str(error)}"
+        if self.error_patterns[error_hash] > 3:
+            log_msg += f"\n⚠️ توجه: این خطا {self.error_patterns[error_hash]} بار تکرار شده است"
+        
+        self.logger.error(log_msg, exc_info=True)
+        
+    def get_common_errors(self) -> Dict[str, int]:
+        """دریافت خطاهای پرتکرار"""
+        return {k: v for k, v in sorted(self.error_patterns.items(), key=lambda item: item[1], reverse=True)[:5]}
+
+logger = AdvancedLogger()
+
+# ================ 1-CONFIGURATION ================
+class AITraderConfig:
+    """تنظیمات پیشرفته با قابلیت یادگیری"""
+    def __init__(self):
+        try:
+            # تنظیمات صرافی
+            self.EXCHANGE_NAME = 'coinex'
+            self.API_KEY = os.getenv('COINEX_API_KEY')
+            self.API_SECRET = os.getenv('COINEX_API_SECRET')
+            
+            # تنظیمات تلگرام
+            self.TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+            self.TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+            
+            # نمادهای معاملاتی
+            self.SYMBOLS = [
+                'BTC/USDT:USDT',
+                'ETH/USDT:USDT',
+                'BNB/USDT:USDT',
+                'SOL/USDT:USDT',
+                'ADA/USDT:USDT'
+            ]
+            
+            # تنظیمات نوسان‌گیری پویا
+            self.SWING_SETTINGS = {
+                'timeframe': '4h',
+                'holding_period': '6-24h',
+                'target_profit': self._dynamic_target_profit(),
+                'max_loss': 1.2,
+                'min_volatility': 1.5,
+                'risk_per_trade': 1.0,
+                'max_daily_trades': 5,
+                'leverage': 5,
+                'adaptive_mode': True
+            }
+            
+            # تنظیمات فنی با قابلیت تطبیق
+            self.TECHNICAL_INDICATORS = {
+                'ema_short': 9,
+                'ema_medium': 21,
+                'ema_long': 50,
+                'rsi_period': 14,
+                'stoch_period': 14,
+                'macd_fast': 12,
+                'macd_slow': 26,
+                'macd_signal': 9,
+                'bollinger_period': 20,
+                'bollinger_std': 2.0,
+                'atr_period': 14
+            }
+            
+            # تنظیمات مدل یادگیری ماشین
+            self.ML_SETTINGS = {
+                'model_path': 'trading_model.pkl',
+                'retrain_interval': 24,  # hours
+                'data_points_threshold': 1000,
+                'test_size': 0.2
+            }
+            
+            logger.logger.info("AI Configuration loaded successfully")
+            
+        except Exception as e:
+            logger.log_error(e, "Configuration initialization")
+            raise
+    
+    def _dynamic_target_profit(self) -> float:
+        """هدف سود پویا بر اساس شرایط بازار"""
+        # در نسخه واقعی می‌توان از تحلیل بازار استفاده کرد
+        return 2.5  # مقدار پایه
+    
+    def update_settings_based_on_performance(self, success_rate: float):
+        """به روزرسانی تنظیمات بر اساس عملکرد"""
+        if success_rate < 0.5:
+            self.SWING_SETTINGS['target_profit'] *= 0.9
+            self.SWING_SETTINGS['risk_per_trade'] *= 0.8
+            logger.logger.info(f"Reduced target profit to {self.SWING_SETTINGS['target_profit']}% due to low success rate")
+        elif success_rate > 0.7:
+            self.SWING_SETTINGS['target_profit'] *= 1.1
+            self.SWING_SETTINGS['risk_per_trade'] = min(2.0, self.SWING_SETTINGS['risk_per_trade'] * 1.2)
+            logger.logger.info(f"Increased target profit to {self.SWING_SETTINGS['target_profit']}% due to high success rate")
+
+# ================ 2-MACHINE LEARNING MODULE ================
+class TradingModel:
+    """مدل یادگیری ماشین برای پیش‌بینی سیگنال‌ها"""
+    def __init__(self, config: AITraderConfig):
+        self.config = config
+        self.model = None
+        self.last_trained = None
+        self.load_model()
+        
+    def load_model(self):
+        """بارگذاری مدل از فایل یا ایجاد مدل جدید"""
+        try:
+            if os.path.exists(self.config.ML_SETTINGS['model_path']):
+                self.model = joblib.load(self.config.ML_SETTINGS['model_path'])
+                self.last_trained = datetime.fromtimestamp(os.path.getmtime(self.config.ML_SETTINGS['model_path']))
+                logger.logger.info("Loaded trained model from disk")
+            else:
+                self.initialize_new_model()
+        except Exception as e:
+            logger.log_error(e, "Loading trading model")
+            self.initialize_new_model()
+    
+    def initialize_new_model(self):
+        """مقداردهی اولیه مدل جدید"""
+        self.model = RandomForestClassifier(
+            n_estimators=100,
+            max_depth=5,
+            random_state=42,
+            class_weight='balanced'
+        )
+        self.last_trained = datetime.now()
+        logger.log
+        # ================ 3-ADVANCED EXCHANGE MANAGER ================
+class AIExchangeManager:
+    """مدیریت پیشرفته صرافی با قابلیت یادگیری"""
+    def __init__(self, config: AITraderConfig):
+        self.config = config
+        self.logger = logger.logger.getChild('ExchangeManager')
+        self.daily_trades_count = 0
+        self.last_trade_time = None
+        self.open_positions = {}
+        self.trade_history = []
+        self.exchange = self._initialize_exchange()
+        self._load_trade_history()
+        
+    def _initialize_exchange(self):
+        """راه‌اندازی اتصال به صرافی با قابلیت بازشناسی خطا"""
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                exchange = getattr(ccxt, self.config.EXCHANGE_NAME)({
+                    'apiKey': self.config.API_KEY,
+                    'secret': self.config.API_SECRET,
+                    'enableRateLimit': True,
+                    'options': {'defaultType': 'future'},
+                    'timeout': 10000,
+                    'verbose': False
+                })
+                exchange.load_markets()
+                self.logger.info(f"Connected to {self.config.EXCHANGE_NAME} successfully")
+                return exchange
+            except ccxt.AuthenticationError as e:
+                self.logger.error(f"Authentication failed (attempt {attempt+1}/{max_retries}): {str(e)}")
+                if attempt == max_retries - 1:
+                    raise
+                time.sleep(5)
+            except ccxt.NetworkError as e:
+                self.logger.error(f"Network error (attempt {attempt+1}/{max_retries}): {str(e)}")
+                if attempt == max_retries - 1:
+                    raise
+                time.sleep(10)
+            except Exception as e:
+                self.logger.error(f"Unexpected error (attempt {attempt+1}/{max_retries}): {str(e)}")
+                if attempt == max_retries - 1:
+                    raise
+                time.sleep(5)
+
+    def _load_trade_history(self):
+        """بارگذاری تاریخچه معاملات از فایل"""
+        try:
+            if os.path.exists('trade_history.json'):
+                with open('trade_history.json', 'r') as f:
+                    self.trade_history = json.load(f)
+                self.logger.info(f"Loaded {len(self.trade_history)} historical trades")
+        except Exception as e:
+            self.logger.error(f"Error loading trade history: {str(e)}")
+
+    def _save_trade_history(self):
+        """ذخیره تاریخچه معاملات در فایل"""
+        try:
+            with open('trade_history.json', 'w') as f:
+                json.dump(self.trade_history, f, indent=2)
+        except Exception as e:
+            self.logger.error(f"Error saving trade history: {str(e)}")
+
+    def get_ohlcv_data(self, symbol: str, timeframe: str = None, limit: int = 200) -> pd.DataFrame:
+        """دریافت داده‌های قیمت با قابلیت بازیابی خطا"""
+        tf = timeframe or self.config.SWING_SETTINGS['timeframe']
+        for attempt in range(3):
+            try:
+                start_time = time.time()
+                self.logger.debug(f"Fetching OHLCV for {symbol} (attempt {attempt+1})")
+                
+                ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe=tf, limit=limit)
+                
+                if not ohlcv:
+                    self.logger.warning(f"No OHLCV data returned for {symbol}")
+                    return pd.DataFrame()
+                    
+                df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                df.set_index('timestamp', inplace=True)
+                
+                # محاسبه تغییرات قیمت برای یادگیری ماشین
+                df['price_change'] = df['close'].pct_change()
+                df['target'] = (df['close'].shift(-3) > df['close']).astype(int)  # پیش‌بینی 3 دوره آینده
+                
+                self.logger.debug(f"Fetched {len(df)} records for {symbol} in {time.time()-start_time:.2f}s")
+                return df.dropna()
+                
+            except ccxt.NetworkError as e:
+                self.logger.error(f"Network error (attempt {attempt+1}): {str(e)}")
+                if attempt == 2:
+                    return pd.DataFrame()
+                time.sleep(5)
+            except Exception as e:
+                self.logger.error(f"Unexpected error (attempt {attempt+1}): {str(e)}")
+                if attempt == 2:
+                    return pd.DataFrame()
+                time.sleep(5)
+
+    def execute_trade(self, symbol: str, signal: str, entry: float, 
+                     target: float, stop_loss: float, confidence: float,
+                     ml_prediction: float = 0.5) -> bool:
+        """اجرای معامله با قابلیت یادگیری"""
+        trade_id = f"{symbol}-{int(time.time())}"
+        trade_details = {
+            'id': trade_id,
+            'symbol': symbol,
+            'direction': signal,
+            'entry_price': entry,
+            'target_price': target,
+            'stop_loss': stop_loss,
+            'confidence': confidence,
+            'ml_confidence': ml_prediction,
+            'status': 'OPEN',
+            'entry_time': datetime.now().isoformat()
+        }
+        
+        try:
+            # بررسی محدودیت معاملات روزانه
+            if self.daily_trades_count >= self.config.SWING_SETTINGS['max_daily_trades']:
+                self.logger.warning(f"Daily trade limit reached ({self.daily_trades_count}/{self.config.SWING_SETTINGS['max_daily_trades']})")
+                return False
+            
+            # محاسبه حجم معامله با در نظر گرفتن پیش‌بینی مدل
+            adjusted_risk = self.config.SWING_SETTINGS['risk_per_trade'] * confidence * (0.5 + ml_prediction)
+            position_size = self.calculate_position_size(entry, stop_loss, adjusted_risk)
+            
+            if position_size <= 0:
+                self.logger.warning("Invalid position size, trade not executed")
+                return False
+            
+            # تنظیم پارامترهای سفارش
+            params = {
+                'stopLoss': {'stopPrice': stop_loss},
+                'takeProfit': {'stopPrice': target},
+                'leverage': self.config.SWING_SETTINGS['leverage']
+            }
+            
+            # اجرای سفارش
+            order = self.exchange.create_order(
+                symbol=symbol,
+                type='limit',
+                side='buy' if signal == 'BUY' else 'sell',
+                amount=position_size,
+                price=entry,
+                params=params
+            )
+            
+            # ثبت معامله
+            trade_details.update({
+                'size': position_size,
+                'order_id': order['id'],
+                'order_info': order
+            })
+            
+            self.daily_trades_count += 1
+            self.last_trade_time = datetime.now()
+            self.open_positions[symbol] = trade_details
+            self.trade_history.append(trade_details)
+            self._save_trade_history()
+            
+            self.logger.info(f"Trade executed successfully: {trade_id}")
+            return True
+            
+        except Exception as e:
+            trade_details['status'] = 'FAILED'
+            trade_details['error'] = str(e)
+            self.trade_history.append(trade_details)
+            self._save_trade_history()
+            
+            self.logger.error(f"Failed to execute trade {trade_id}: {str(e)}")
+            return False
+
+    def calculate_position_size(self, entry: float, stop_loss: float, risk_percent: float) -> float:
+        """محاسبه حجم معامله با مدیریت ریسک پیشرفته"""
+        try:
+            balance = self.get_balance()
+            if balance <= 0:
+                self.logger.warning(f"Insufficient balance: {balance}")
+                return 0.0
+                
+            risk_amount = balance * (risk_percent / 100)
+            risk_per_unit = abs(entry - stop_loss)
+            
+            if risk_per_unit == 0:
+                self.logger.error("Zero risk per unit (entry == stop_loss)")
+                return 0.0
+                
+            # محاسبه با در نظر گرفتن لوریج و محدودیت‌های صرافی
+            position_size = (risk_amount / risk_per_unit) * self.config.SWING_SETTINGS['leverage']
+            
+            # گرد کردن به مقدار قابل قبول برای صرافی
+            symbol_info = self.exchange.market(self.config.SYMBOLS[0])  # استفاده از اولین نماد به عنوان نمونه
+            if 'precision' in symbol_info and 'amount' in symbol_info['precision']:
+                precision = symbol_info['precision']['amount']
+                position_size = round(position_size, precision)
+                
+  def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+    """محاسبه اندیکاتورهای پیشرفته با بهینه‌سازی"""
+    try:
+        if df.empty:
+            self.logger.warning("Empty DataFrame received")
+            return df
+            
+        # استفاده از کش برای بهبود عملکرد
+        cache_key = hashlib.md5(pd.util.hash_pandas_object(df).values).hexdigest()
+        if cache_key in self.indicators_cache:
+            return self.indicators_cache[cache_key]
+            
+        # محاسبه EMA
+        df['ema_short'] = self._calculate_ema(df, 'close', self.config.TECHNICAL_INDICATORS['ema_short'])
+        df['ema_medium'] = self._calculate_ema(df, 'close', self.config.TECHNICAL_INDICATORS['ema_medium'])
+        df['ema_long'] = self._calculate_ema(df, 'close', self.config.TECHNICAL_INDICATORS['ema_long'])
+        
+        # محاسبه MACD
+        df['macd'], df['macd_signal'], df['macd_diff'] = self._calculate_macd(df)
+        
+        # محاسبه RSI
+        df['rsi'] = RSIIndicator(
+            df['close'],
+            window=self.config.TECHNICAL_INDICATORS['rsi_period']
+        ).rsi()
+        
+        # محاسبه Stochastic
+        df['stoch_k'], df['stoch_d'] = self._calculate_stochastic(df)
+        
+        # محاسبه Bollinger Bands
+        df['bb_upper'], df['bb_middle'], df['bb_lower'] = self._calculate_bollinger(df)
+        
+        # محاسبه ATR
+        df['atr'] = AverageTrueRange(
+            high=df['high'],
+            low=df['low'],
+            close=df['close'],
+            window=self.config.TECHNICAL_INDICATORS['atr_period']
+        ).average_true_range()
+        
+        # ویژگی‌های اضافی برای مدل یادگیری ماشین
+        df['price_change_5'] = df['close'].pct_change(5)
+        df['volume_change'] = df['volume'].pct_change()
+        df['volatility'] = df['close'].rolling(5).std() / df['close'].rolling(5).mean()
+        
+        self.indicators_cache[cache_key] = df.dropna()
+        return self.indicators_cache[cache_key]
+        
+    except Exception as e:
+        self.logger.error(f"Error in calculate_indicators: {str(e)}")
+        return df
+
+def _calculate_ema(self, df: pd.DataFrame, column: str, window: int) -> pd.Series:
+    """محاسبه EMA با بهینه‌سازی"""
+    return EMAIndicator(df[column], window=window).ema_indicator()
+
+def _calculate_macd(self, df: pd.DataFrame) -> Tuple[pd.Series, pd.Series, pd.Series]:
+    """محاسبه MACD"""
+    macd = MACD(
+        df['close'],
+        window_slow=self.config.TECHNICAL_INDICATORS['macd_slow'],
+        window_fast=self.config.TECHNICAL_INDICATORS['macd_fast'],
+        window_sign=self.config.TECHNICAL_INDICATORS['macd_signal']
+    )
+    return macd.macd(), macd.macd_signal(), macd.macd_diff()
+
+def _calculate_stochastic(self, df: pd.DataFrame) -> Tuple[pd.Series, pd.Series]:
+    """محاسبه Stochastic"""
+    stoch = StochasticOscillator(
+        high=df['high'],
+        low=df['low'],
+        close=df['close'],
+        window=self.config.TECHNICAL_INDICATORS['stoch_period']
+    )
+    return stoch.stoch(), stoch.stoch_signal()
+
+def _calculate_bollinger(self, df: pd.DataFrame) -> Tuple[pd.Series, pd.Series, pd.Series]:
+    """محاسبه Bollinger Bands"""
+    bb = BollingerBands(
+        df['close'],
+        window=self.config.TECHNICAL_INDICATORS['bollinger_period'],
+        window_dev=self.config.TECHNICAL_INDICATORS['bollinger_std']
+    )
+    return bb.bollinger_hband(), bb.bollinger_mavg(), bb.bollinger_lband()
+
+def generate_signal(self, df: pd.DataFrame) -> dict:
+    """تولید سیگنال ترکیبی با استفاده از تحلیل تکنیکال و مدل یادگیری ماشین"""
+    signal = {
+        'direction': None,
+        'entry': None,
+        'target': None,
+        'stop_loss': None,
+        'confidence': 0.0,
+        'ml_confidence': 0.0
+    }
+    
+    try:
+        if len(df) < 50:  # حداقل داده مورد نیاز
+            self.logger.warning("Insufficient data for signal generation")
+            return signal
+            
+        last_row = df.iloc[-1]
+        prev_row = df.iloc[-2]
+        
+        # پیش‌بینی مدل یادگیری ماشین
+        ml_features = self._prepare_ml_features(df)
+        ml_prediction = self.model.predict_proba(ml_features)[0][1]
+        signal['ml_confidence'] = ml_prediction
+        
+        # شرایط خرید ترکیبی
+        buy_conditions = (
+            (last_row['ema_short'] > last_row['ema_long']) and
+            (last_row['rsi'] < 45) and
+            (last_row['macd'] > last_row['macd_signal']) and
+            (last_row['close'] < last_row['bb_lower'] + (0.5 * last_row['atr'])) and
+            (last_row['volume'] > df['volume'].rolling(5).mean().iloc[-1]) and
+            (ml_prediction > 0.6)
+        )
+        
+        # شرایط فروش ترکیبی
+        sell_conditions = (
+            (last_row['ema_short'] < last_row['ema_long']) and
+            (last_row['rsi'] > 55) and
+            (last_row['macd'] < last_row['macd_signal']) and
+            (last_row['close'] > last_row['bb_upper'] - (0.5 * last_row['atr'])) and
+            (last_row['volume'] > df['volume'].rolling(5).mean().iloc[-1]) and
+            (ml_prediction < 0.4)
+        )
+        
+        if buy_conditions:
+            confidence = min(0.9, (45 - last_row['rsi']) / 45 * 0.6 + ml_prediction * 0.4)
+            signal.update({
+                'direction': 'BUY',
+                'entry': last_row['close'],
+                'target': self._calculate_target(last_row['close'], 'BUY'),
+                'stop_loss': self._calculate_stop_loss(last_row['close'], last_row['atr'], 'BUY'),
+                'confidence': confidence
+            })
+            
+        elif sell_conditions:
+            confidence = min(0.9, (last_row['rsi'] - 55) / 45 * 0.6 + (1 - ml_prediction) * 0.4)
+            signal.update({
+                'direction': 'SELL',
+                'entry': last_row['close'],
+                'target': self._calculate_target(last_row['close'], 'SELL'),
+                'stop_loss': self._calculate_stop_loss(last_row['close'], last_row['atr'], 'SELL'),
+                'confidence': confidence
+            })
+            
+        self.logger.debug(f"Generated signal: {signal}")
+        return signal
+        
+    except Exception as e:
+        self.logger.error(f"Error in generate_signal: {str(e)}")
+        return signal
+
+def _prepare_ml_features(self, df: pd.DataFrame) -> pd.DataFrame:
+    """آماده‌سازی ویژگی‌ها برای مدل یادگیری ماشین"""
+    features = df[[
+        'ema_short', 'ema_medium', 'ema_long',
+        'macd', 'macd_signal', 'macd_diff',
+        'rsi', 'stoch_k', 'stoch_d',
+        'bb_upper', 'bb_middle', 'bb_lower',
+        'atr', 'price_change_5', 'volume_change', 'volatility'
+    ]].iloc[-1:].copy()
+    
+    # نرمال‌سازی ویژگی‌ها
+    for col in features.columns:
+        if df[col].std() > 0:
+            features[col] = (features[
+
+
+
+
+بقیه کد را نشان بده
+
+================ 5-TELEGRAM BOT MANAGER ================
+class AdvancedTelegramManager:
+"""مدیریت پیشرفته تلگرام با قابلیت گزارش‌دهی هوشمند"""
+def init(self, config: AITraderConfig, exchange_manager: AIExchangeManager):
+self.config = config
+self.exchange = exchange_manager
+self.logger = logger.logger.getChild('TelegramManager')
+self.bot = None
+self.application = None
+self._initialize_bot()
+
+def _initialize_bot(self):
+    """راه‌اندازی بات تلگرام با مدیریت خطا"""
+    try:
+        self.bot = Bot(token=self.config.TELEGRAM_TOKEN)
+        self.application = Application.builder().token(self.config.TELEGRAM_TOKEN).build()
+        
+        # ثبت دستورات
+        handlers = [
+            CommandHandler("start", self._command_start),
+            CommandHandler("stop", self._command_stop),
+            CommandHandler("status", self._command_status),
+            CommandHandler("positions", self._command_positions),
+            CommandHandler("balance", self._command_balance),
+            CommandHandler("performance", self._command_performance),
+            CommandHandler("errors", self._command_errors),
+            CommandHandler("settings", self._command_settings),
+            CommandHandler("prices", self._command_prices),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message)
+        ]
+        
+        for handler in handlers:
+            self.application.add_handler(handler)
+        
+        # شروع بات در یک thread جداگانه
+        self.bot_thread = threading.Thread(target=self._run_bot, daemon=True)
+        self.bot_thread.start()
+        
+        self.logger.info("Telegram bot initialized successfully")
+        
+    except Exception as e:
+        self.logger.error(f"Failed to initialize Telegram bot: {str(e)}")
+        raise
+
+def _run_bot(self):
+    """اجرای بات در thread جداگانه"""
+    try:
+        self.application.run_polling(
+            poll_interval=0.5,
+            timeout=10,
+            bootstrap_retries=-1,
+            allowed_updates=Update.ALL_TYPES
+        )
+    except Exception as e:
+        self.logger.error(f"Error in bot polling: {str(e)}")
+
+async def _command_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """دستور شروع ربات"""
+    try:
+        await update.message.reply_text(
+            "🤖 ربات نوسان‌گیر هوشمند فعال شد\n\n"
+            "🔹 دستورات موجود:\n"
+            "/status - وضعیت فعلی\n"
+            "/positions - موقعیت‌های باز\n"
+            "/balance - موجودی حساب\n"
+            "/performance - عملکرد معاملات\n"
+            "/errors - خطاهای اخیر\n"
+            "/settings - تنظیمات فعلی\n"
+            "/prices - قیمت‌های بازار\n"
+            "/stop - توقف ربات\n\n"
+            "🔄 نسخه: AI Trading Bot 2.0"
+        )
+    except Exception as e:
+        self.logger.error(f"Error in /start command: {str(e)}")
+
+async def _command_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """نمایش وضعیت فعلی سیستم"""
+    try:
+        status = self._get_system_status()
+        await update.message.reply_text(status, parse_mode='Markdown')
+    except Exception as e:
+        self.logger.error(f"Error in /status command: {str(e)}")
+        await update.message.reply_text("⚠️ خطا در دریافت وضعیت سیستم")
+
+def _get_system_status(self) -> str:
+    """تهیه گزارش وضعیت سیستم"""
+    balance = self.exchange.get_balance()
+    positions = len(self.exchange.open_positions)
+    daily_trades = self.exchange.daily_trades_count
+    last_trade = self.exchange.last_trade_time.strftime('%Y-%m-%d %H:%M') if self.exchange.last_trade_time else "None"
+    
+    return (
+        "📊 *وضعیت سیستم*\n\n"
+        f"• 💰 موجودی: {balance:.2f} USDT\n"
+        f"• 📌 موقعیت‌های باز: {positions}\n"
+        f"• 🔄 معاملات امروز: {daily_trades}/{self.config.SWING_SETTINGS['max_daily_trades']}\n"
+        f"• ⏱ آخرین معامله: {last_trade}\n"
+        f"• 🚦 حالت تطبیقی: {'فعال' if self.config.SWING_SETTINGS['adaptive_mode'] else 'غیرفعال'}\n"
+        f"• 📈 اعتماد مدل AI: {self.exchange.get_model_confidence()*100:.1f}%"
+    )
+
+async def _command_positions(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """نمایش موقعیت‌های باز"""
+    try:
+        positions = self._format_positions()
+        await update.message.reply_text(positions, parse_mode='Markdown')
+    except Exception as e:
+        self.logger.error(f"Error in /positions command: {str(e)}")
+        await update.message.reply_text("⚠️ خطا در دریافت موقعیت‌ها")
+
+def _format_positions(self) -> str:
+    """فرمت‌دهی موقعیت‌های باز"""
+    if not self.exchange.open_positions:
+        return "📭 هیچ موقعیت بازی وجود ندارد"
+        
+    positions_text = "📋 *موقعیت‌های باز*\n\n"
+    for symbol, pos in self.exchange.open_positions.items():
+        pnl = ((pos['current_price'] - pos['entry_price']) / pos['entry_price']) * 100 * (
+            1 if pos['direction'] == 'BUY' else -1
+        )
+        positions_text += (
+            f"• *{symbol}* ({'خرید' if pos['direction'] == 'BUY' else 'فروش'})\n"
+            f"  ⏱ ورود: {pos['entry_price']:.4f}\n"
+            f"  🎯 هدف: {pos['target_price']:.4f}\n"
+            f"  🛑 حد ضرر: {pos['stop_loss']:.4f}\n"
+            f"  📊 سود/ضرر: {pnl:.2f}%\n"
+            f"  ⏳ زمان: {pos['entry_time']}\n\n"
+        )
+    return positions_text
+
+async def _command_performance(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """نمایش عملکرد معاملات"""
+    try:
+        performance = self._calculate_performance()
+        await update.message.reply_text(performance, parse_mode='Markdown')
+    except Exception as e:
+        self.logger.error(f"Error in /performance command: {str(e)}")
+        await update.message.reply_text("⚠️ خطا در محاسبه عملکرد")
+
+def _calculate_performance(self) -> str:
+    """محاسبه عملکرد معاملاتی"""
+    if not self.exchange.trade_history:
+        return "📊 هیچ تاریخچه معاملاتی وجود ندارد"
+        
+    total_trades = len(self.exchange.trade_history)
+    winning_trades = sum(1 for t in self.exchange.trade_history if t.get('pnl', 0) > 0)
+    win_rate = (winning_trades / total_trades) * 100 if total_trades > 0 else 0
+    total_pnl = sum(t.get('pnl', 0) for t in self.exchange.trade_history)
+    
+    return (
+        "📈 *عملکرد معاملاتی*\n\n"
+        f"• 🔢 تعداد معاملات: {total_trades}\n"
+        f"• ✅ معاملات سودده: {winning_trades} ({win_rate:.1f}%)\n"
+        f"• 💵 سود خالص: {total_pnl:.2f} USDT\n"
+        f"• 📊 بهترین معامله: {max(t.get('pnl', 0) for t in self.exchange.trade_history):.2f} USDT\n"
+        f"• 📉 بدترین معامله: {min(t.get('pnl', 0) for t in self.exchange.trade_history):.2f} USDT"
+    )
+
+def send_alert(self, message: str, urgent: bool = False):
+    """ارسال هشدار به کاربر با سطوح اهمیت مختلف"""
+    try:
+        if urgent:
+            message = "🚨 " + message
+        
+        # ارسال در thread جداگانه برای جلوگیری از blocking
+        threading.Thread(
+            target=self._send_message_sync,
+            args=(message,),
+            daemon=True
+        ).start()
+    except Exception as e:
+        self.logger.error(f"Error sending alert: {str(e)}")
+
+def _send_message_sync(self, message: str):
+    """ارسال همزمان پیام"""
+    try:
+        self.bot.send_message(
+            chat_id=self.config.TELEGRAM_CHAT_ID,
+            text=message,
+            parse_mode='Markdown'
+        # راه‌اندازی کامپوننت‌ها
+        self.config = AITraderConfig()
+        self.model = TradingModel(self.config)
+        self.exchange = AIExchangeManager(self.config)
+        self.analyzer = AITechnicalAnalyzer(self.config, self.model)
+        self.telegram = AdvancedTelegramManager(self.config, self.exchange)
+        
+        # ثبت رویدادهای اضطراری
+        self.emergency_handlers = {
+            'high_loss': self._handle_high_loss,
+            'connection_lost': self._handle_connection_issue,
+            'market_crash': self._handle_market_crash
+        }
+        
+        self.logger.info("AI Trading Bot initialized successfully")
+        
+    except Exception as e:
+        self.logger.error(f"Failed to initialize trading bot: {str(e)}")
+        raise
+
+def start(self):
+    """شروع عملیات معاملاتی"""
+    self.running = True
+    self.logger.info("=== Starting AI Trading Bot ===")
+    self.telegram.send_alert("🚀 ربات معاملاتی هوشمند شروع به کار کرد")
+    
+    try:
+        while self.running:
+            try:
+                # بررسی زمان بازآموزی مدل
+                if self._should_retrain_model():
+                    self._retrain_model()
+                
+                # اسکن بازار برای فرصت‌های معاملاتی
+                self.scan_market()
+                
+                # بررسی و مدیریت موقعیت‌های باز
+                self.manage_positions()
+                
+                # خواب بین چرخه‌ها
+                time.sleep(self.trade_interval)
+                
+            except KeyboardInterrupt:
+                self.logger.info("Bot stopped by user")
+                self.telegram.send_alert("🛑 ربات توسط کاربر متوقف شد")
+                break
+            except Exception as e:
+                self.logger.error(f"Error in main loop: {str(e)}")
+                time.sleep(60)  # توقف در صورت خطا
+                
+    except Exception as e:
+        self.logger.critical(f"Fatal error: {str(e)}")
+        self.telegram.send_alert(f"☠️ خطای بحرانی: ربات متوقف شد\n{str(e)}")
+    finally:
+        self.running = False
+        self.logger.info("Trading bot stopped")
+
+def _should_retrain_model(self) -> bool:
+    """تعیین آیا مدل نیاز به بازآموزی دارد"""
+    if not self.last_retrain_time:
+        return True
+        
+    hours_since_last = (datetime.now() - self.last_retrain_time).total_seconds() / 3600
+    return hours_since_last >= self.config.ML_SETTINGS['retrain_interval']
+
+def _retrain_model(self):
+    """بازآموزی مدل یادگیری ماشین"""
+    try:
+        self.logger.info("Starting model retraining...")
+        self.telegram.send_alert("🔄 در حال بازآموزی مدل هوش مصنوعی...")
+        
+        # جمع‌آوری داده‌های تاریخی
+        all_data = []
+        for symbol in self.config.SYMBOLS:
+            df = self.exchange.get_ohlcv_data(symbol, limit=500)
+            if not df.empty:
+                all_data.append(df)
+        
+        if not all_data:
+            self.logger.warning("No data available for retraining")
+            return
+            
+        combined_df = pd.concat(all_data)
+        X = combined_df.drop(columns=['target'], errors='ignore')
+        y = combined_df['target']
+        
+        # تقسیم داده‌ها
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, 
+            test_size=self.config.ML_SETTINGS['test_size'],
+            random_state=42
+        )
+        
+        # آموزش مدل
+        self.model.train(X_train, y_train)
+        
+        # ارزیابی مدل
+        accuracy = self.model.evaluate(X_test, y_test)
+        self.last_retrain_time = datetime.now()
+        
+        self.telegram.send_alert(
+            f"✅ مدل بازآموزی شد\n"
+            f"دقت مدل: {accuracy*100:.1f}%\n"
+            f"تعداد نمونه‌ها: {len(combined_df)}"
+        )
+        self.logger.info(f"Model retrained successfully. Accuracy: {accuracy:.2f}")
+        
+        # به‌روزرسانی تنظیمات بر اساس عملکرد مدل
+        self._update_trading_strategy(accuracy)
+        
+    except Exception as e:
+        self.logger.error(f"Model retraining failed: {str(e)}")
+        self.telegram.send_alert("⚠️ خطا در بازآموزی مدل")
+
+def _update_trading_strategy(self, model_accuracy: float):
+    """به‌روزرسانی استراتژی معاملاتی بر اساس دقت مدل"""
+    try:
+        if model_accuracy > 0.7:
+            self.config.SWING_SETTINGS['risk_per_trade'] = min(
+                2.0, 
+                self.config.SWING_SETTINGS['risk_per_trade'] * 1.2
+            )
+            self.config.SWING_SETTINGS['target_profit'] *= 1.1
+        elif model_accuracy < 0.5:
+            self.config.SWING_SETTINGS['risk_per_trade'] *= 0.8
+            self.config.SWING_SETTINGS['target_profit'] *= 0.9
+            
+        self.logger.info(
+            f"Updated strategy based on model accuracy ({model_accuracy:.2f}): "
+            f"Risk: {self.config.SWING_SETTINGS['risk_per_trade']}%, "
+            f"Target: {self.config.SWING_SETTINGS['target_profit']}%"
+        )
+    except Exception as e:
+        self.logger.error(f"Error updating trading strategy: {str(e)}")
+
+def scan_market(self):
+    """اسکن بازار برای یافتن فرصت‌های معاملاتی"""
+    self.logger.info("Starting market scan...")
+    
+    try:
+        for symbol in self.config.SYMBOLS:
+            if not self.running:
+                break
+                
+            if self.exchange.daily_trades_count >= self.config.SWING_SETTINGS['max_daily_trades']:
+                self.logger.info("Daily trade limit reached")
+                break
+                
+            if symbol in self.exchange.open_positions:
+                continue
+                
+            # دریافت داده‌های بازار
+            df = self.exchange.get_ohlcv_data(symbol)
+            if df.empty:
+                continue
+                
+            # محاسبه اندیکاتورها
+            df = self.analyzer.calculate_indicators(df)
+            
+            # تولید سیگنال
+            signal = self.analyzer.generate_signal(df)
+            
+            # اجرای معامله در صورت وجود سیگنال قوی
+            if signal['direction'] and signal['confidence'] >= 0.7:
+                self.logger.info(f"Executing trade for {symbol}: {signal}")
+                self.exchange.execute_trade(
+                    symbol=symbol,
+                    signal=signal['direction'],
+                    entry=signal['entry'],
+                    target=signal['target'],
+                    stop_loss=signal['stop_loss'],
+                    confidence=signal['confidence'],
+                    ml_prediction=signal['ml_confidence']
+                )
+                
+                # توقف کوتاه برای جلوگیری از rate limit
+                time.sleep(2)
+                
+    except Exception as e:
+        self.logger.error(f"Market scan failed: {str(e)}")
+        self.handle_emergency('connection_lost')
+
+def manage_positions(self):
+    """مدیریت موقعیت‌های باز"""
+    self.logger.debug("Managing open positions...")
+    
+    try:
+        for symbol, position in list(self.exchange.open_positions.items()):
+            if not self.running:
+                break
+                
+            try:
+                # دریافت قیمت فعلی
+                ticker = self.exchange.exchange.fetch_ticker(symbol)
+                current_price = ticker['last']
+                self.exchange.open_positions[symbol]['current_price'] = current_price
+                
+                # بررسی شرایط خروج
+                exit_condition = self._check_exit_conditions(symbol, position, current_price)
+                if exit_condition:
+                    self._close_position(symbol, exit_condition)
+                    
+            except Exception as e:
+                self.logger.error(f"Error managing position {symbol}: {str(e)}")
+                continue
+                
+    except Exception as e:
+        self.logger.error(f"Position management failed: {str(e)}")
+
+def _check_exit_conditions(self, symbol: str, position: dict, current_price: float) -> Optional[str]:
+    """بررسی شرایط خروج از معامله"""
+    # بررسی حد سود
+    if position['direction'] == 'BUY' and current_price >= position['target_price']
+def _check_exit_conditions(self, symbol: str, position: dict, current_price: float) -> Optional[str]:
+    """بررسی شرایط خروج از معامله با منطق پیشرفته"""
+    try:
+        direction = position['direction']
+        entry_price = position['entry_price']
+        target_price = position['target_price']
+        stop_loss = position['stop_loss']
+        
+        # محاسبه سود/زیان فعلی
+        pnl = ((current_price - entry_price) / entry_price) * 100 * (1 if direction == 'BUY' else -1)
+        
+        # 1. بررسی حد ضرر پویا
+        if self._check_dynamic_stop_loss(position, current_price, pnl):
+            return "حد ضرر پویا فعال شد"
+            
+        # 2. بررسی حد سود
+        if (direction == 'BUY' and current_price >= target_price) or \
+           (direction == 'SELL' and current_price <= target_price):
+            return "حد سود فعال شد"
+            
+        # 3. بررسی زمان نگهداری
+        hold_time = datetime.now() - datetime.fromisoformat(position['entry_time'])
+        max_hold = timedelta(hours=24)
+        if hold_time > max_hold:
+            return "زمان نگهداری به پایان رسید"
+            
+        # 4. بررسی شرایط اضطراری بازار
+        if self._check_market_conditions(symbol, current_price):
+            return "شرایط اضطراری بازار"
+            
+        # 5. بررسی سیگنال معکوس از مدل AI
+        if self._check_ai_reversal_signal(symbol):
+            return "سیگنال معکوس AI"
+            
+        return None
+            
+    except Exception as e:
+        self.logger.error(f"Error in exit condition check: {str(e)}")
+        return None
+
+def _check_dynamic_stop_loss(self, position: dict, current_price: float, pnl: float) -> bool:
+    """بررسی حد ضرر پویا با تریلینگ استاپ"""
+    direction = position['direction']
+    stop_loss = position['stop_loss']
+    
+    # برای موقعیت‌های خرید
+    if direction == 'BUY':
+        # اگر قیمت 50% از هدف گذر کرده، استاپ را به نقطه سربه‌سر منتقل کن
+        if current_price >= position['entry_price'] + (position['target_price'] - position['entry_price']) * 0.5:
+            new_stop = position['entry_price'] * 1.005  # کمی بالاتر از نقطه ورود
+            if new_stop > stop_loss:
+                position['stop_loss'] = new_stop
+                self.logger.info(f"Updated trailing stop for {position['symbol']} to {new_stop:.4f}")
+        
+        return current_price <= position['stop_loss']
+    
+    # برای موقعیت‌های فروش
+    else:
+        if current_price <= position['entry_price'] - (position['entry_price'] - position['target_price']) * 0.5:
+            new_stop = position['entry_price'] * 0.995  # کمی پایین‌تر از نقطه ورود
+            if new_stop < stop_loss:
+                position['stop_loss'] = new_stop
+                self.logger.info(f"Updated trailing stop for {position['symbol']} to {new_stop:.4f}")
+        
+        return current_price >= position['stop_loss']
+
+def _check_market_conditions(self, symbol: str, current_price: float) -> bool:
+    """بررسی شرایط خاص بازار"""
+    try:
+        # دریافت داده‌های بازار
+        ticker = self.exchange.exchange.fetch_ticker(symbol)
+        
+        # بررسی نوسان غیرعادی
+        price_change_24h = ticker['percentage']
+        if abs(price_change_24h) > 15:  # تغییر بیش از 15% در 24 ساعت
+            self.logger.warning(f"Abnormal volatility detected for {symbol}: {price_change_24h:.2f}%")
+            return True
+            
+        # بررسی حجم معاملات غیرعادی
+        avg_volume = self.exchange.get_avg_volume(symbol, period=30)
+        current_volume = ticker['baseVolume']
+        
+        if current_volume > avg_volume * 5:  # حجم 5 برابر میانگین ماهانه
+            self.logger.warning(f"Abnormal volume detected for {symbol}: {current_volume:.2f} vs avg {avg_volume:.2f}")
+            return True
+            
+        return False
+        
+    except Exception as e:
+        self.logger.error(f"Error checking market conditions: {str(e)}")
+        return False
+
+def _check_ai_reversal_signal(self, symbol: str) -> bool:
+    """بررسی سیگنال معکوس از مدل AI"""
+    try:
+        df = self.exchange.get_ohlcv_data(symbol)
+        if df.empty:
+            return False
+            
+        # محاسبه اندیکاتورها
+        df = self.analyzer.calculate_indicators(df)
+        
+        # پیش‌بینی مدل
+        prediction = self.analyzer.get_ai_prediction(df)
+        
+        # اگر مدل با اطمینان بالا (>70%) خلاف موقعیت فعلی پیش‌بینی کند
+        current_position = self.exchange.open_positions.get(symbol, {}).get('direction')
+        if current_position == 'BUY' and prediction < 0.3:
+            return True
+        elif current_position == 'SELL' and prediction > 0.7:
+            return True
+            
+        return False
+        
+    except Exception as e:
+        self.logger.error(f"Error checking AI reversal signal: {str(e)}")
+        return False
+
+def _close_position(self, symbol: str, reason: str):
+    """بستن موقعیت با مدیریت پیشرفته"""
+    try:
+        self.logger.info(f"Closing position for {symbol}, reason: {reason}")
+        
+        # بستن موقعیت در صرافی
+        success = self.exchange.close_position(symbol)
+        if not success:
+            raise Exception("Failed to close position on exchange")
+            
+        # ثبت نتایج معامله
+        position = self.exchange.open_positions.pop(symbol)
+        entry_price = position['entry_price']
+        exit_price = position.get('current_price', position['target_price'])
+        pnl = ((exit_price - entry_price) / entry_price) * 100 * (1 if position['direction'] == 'BUY' else -1)
+        
+        # به‌روزرسانی تاریخچه معاملات
+        trade_result = {
+            'symbol': symbol,
+            'direction': position['direction'],
+            'entry_price': entry_price,
+            'exit_price': exit_price,
+            'pnl': pnl,
+            'duration': str(datetime.now() - datetime.fromisoformat(position['entry_time'])),
+            'reason': reason,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        self.exchange.trade_history.append(trade_result)
+        self.exchange.save_trade_history()
+        
+        # ارسال نوتیفیکیشن
+        self.telegram.send_alert(
+            f"🔚 معامله بسته شد\n\n"
+            f"• نماد: {symbol}\n"
+            f"• نوع: {'خرید' if position['direction'] == 'BUY' else 'فروش'}\n"
+            f"• قیمت ورود: {entry_price:.4f}\n"
+            f"• قیمت خروج: {exit_price:.4f}\n"
+            f"• سود/ضرر: {pnl:.2f}%\n"
+            f"• مدت: {trade_result['duration']}\n"
+            f"• دلیل: {reason}"
+        )
+        
+        # به‌روزرسانی استراتژی بر اساس نتیجه
+        self._update_strategy_based_on_trade(trade_result)
+        
+    except Exception as e:
+        self.logger.error(f"Error closing position: {str(e)}")
+        self.telegram.send_alert(f"⚠️ خطا در بستن معامله {symbol}: {str(e)}")
+
+def _update_strategy_based_on_trade(self, trade_result: dict):
+    """به‌روزرسانی استراتژی بر اساس نتیجه معامله"""
+    try:
+        # فقط اگر ضرر بیش از 2% بود
+        if trade_result['pnl'] < -2:
+            # کاهش اندازه موقعیت بعدی
+            self.config.SWING_SETTINGS['risk_per_trade'] = max(
+                0.5, 
+                self.config.SWING_SETTINGS['risk_per_trade'] * 0.9
+            )
+            self.logger.info(f"Reduced risk per trade to {self.config.SWING_SETTINGS['risk_per_trade']}% due to loss")
+            
+            # اضافه کردن به لیست سیگنال‌های ضعیف
+            self.model.add_weak_signal(trade_result['symbol'], trade_result['direction'])
+            
+        # اگر سود بیش از 5% بود
+        elif trade_result['pnl'] > 5:
+            # افزایش تدریجی اندازه موقع
+            
+def handle_emergency(self, emergency_type: str, **kwargs):
+    """مدیریت شرایط اضطراری مختلف"""
+    try:
+        handler = self.bot.emergency_handlers.get(emergency_type)
+        if handler:
+            handler(**kwargs)
+        else:
+            self.logger.warning(f"No handler found for emergency type: {emergency_type}")
+            
+    except Exception as e:
+        self.logger.error(f"Error handling emergency: {str(e)}")
+        self.bot.telegram.send_alert(f"⚠️ خطا در مدیریت شرایط اضطراری: {str(e)}")
+
+def _handle_high_loss(self, threshold: float = -5.0):
+    """مدیریت ضررهای سنگین"""
+    try:
+        # بررسی ضررهای اخیر
+        recent_trades = [t for t in self.bot.exchange.trade_history 
+                       if datetime.now() - datetime.fromisoformat(t['timestamp']) < timedelta(days=1)]
+        
+        if not recent_trades:
+            return
+            
+        loss_count = sum(1 for t in recent_trades if t['pnl'] < threshold)
+        total_trades = len(recent_trades)
+        
+        if loss_count >= 3 and (loss_count / total_trades) > 0.5:
+            # فعال کردن حالت حفاظتی
+            self.bot.config.SWING_SETTINGS['risk_per_trade'] = max(
+                0.5, 
+                self.bot.config.SWING_SETTINGS['risk_per_trade'] * 0.7
+            )
+            
+            self.logger.warning(
+                f"High loss detected! {loss_count}/{total_trades} trades below {threshold}%. "
+                f"Reduced risk to {self.bot.config.SWING_SETTINGS['risk_per_trade']}%"
+            )
+            
+            self.bot.telegram.send_alert(
+                f"🚨 حالت حفاظتی فعال شد\n\n"
+                f"• تعداد معاملات ضررده اخیر: {loss_count}\n"
+                f"• درصد ضرر: بیش از {threshold}%\n"
+                f"• ریسک جدید هر معامله: {self.bot.config.SWING_SETTINGS['risk_per_trade']}%\n\n"
+                f"ربات به طور موقت ریسک را کاهش داده است"
+            )
+            
+            # بازآموزی فوری مدل
+            self.bot._retrain_model()
+            
+    except Exception as e:
+        self.logger.error(f"Error in high loss handling: {str(e)}")
+
+def _handle_connection_issue(self, retry_count: int = 3):
+    """مدیریت مشکلات اتصال"""
+    try:
+        for attempt in range(retry_count):
+            try:
+                self.logger.info(f"Testing connection {attempt+1}/{retry_count}")
+                
+                # تست اتصال با درخواست ساده
+                self.bot.exchange.exchange.fetch_balance()
+                self.logger.info("Connection restored")
+                return True
+                
+            except Exception as e:
+                self.logger.warning(f"Connection test failed (attempt {attempt+1}): {str(e)}")
+                time.sleep(10 * (attempt + 1))
+                
+        # اگر بعد از چند بار تلاش موفق نشد
+        self.bot.telegram.send_alert(
+            "🔴 اتصال به صرافی با مشکل مواجه شده است\n\n"
+            "ربات به طور موقت متوقف شده است. لطفا وضعیت اتصال را بررسی کنید"
+        )
+        self.bot.running = False
+        return False
+        
+    except Exception as e:
+        self.logger.error(f"Error handling connection issue: {str(e)}")
+        return False
+
+def _handle_market_crash(self, threshold: float = -10.0):
+    """مدیریت سقوط بازار"""
+    try:
+        # بررسی تغییرات قیمت در نمادهای اصلی
+        for symbol in self.bot.config.SYMBOLS:
+            ticker = self.bot.exchange.exchange.fetch_ticker(symbol)
+            change_24h = ticker['percentage']
+            
+            if change_24h < threshold:
+                # بستن تمام موقعیت‌ها
+                for pos in list(self.bot.exchange.open_positions.keys()):
+                    self.bot._close_position(pos, "سقوط بازار")
+                    
+                # فعال کردن حالت انتظار
+                self.bot.config.SWING_SETTINGS['pause_trading'] = True
+                self.bot.telegram.send_alert(
+                    f"⚠️ وضعیت اضطراری سقوط بازار\n\n"
+                    f"• نماد: {symbol}\n"
+                    f"• تغییر قیمت 24h: {change_24h:.2f}%\n\n"
+                    f"تمام موقعیت‌ها بسته شدند و معاملات جدید متوقف شده‌اند"
+                )
+                return
+                
+    except Exception as e:
+        self.logger.error(f"Error handling market crash: {str(e)}")
+
+def check_market_health(self):
+    """بررسی سلامت کلی بازار"""
+    try:
+        if self.last_health_check and \
+           (datetime.now() - self.last_health_check).total_seconds() < 3600:
+            return
+            
+        self.logger.info("Performing market health check...")
+        health_status = {}
+        
+        # شاخص‌های سلامت بازار
+        total_volume = 0
+        extreme_moves = 0
+        symbol_count = len(self.bot.config.SYMBOLS)
+        
+        for symbol in self.bot.config.SYMBOLS:
+            try:
+                ticker = self.bot.exchange.exchange.fetch_ticker(symbol)
+                ohlcv = self.bot.exchange.get_ohlcv_data(symbol, limit=24)
+                
+                if ohlcv.empty:
+                    continue
+                    
+                # محاسبه معیارهای سلامت
+                volume_change = ohlcv['volume'].pct_change().iloc[-1] * 100
+                price_change = ohlcv['close'].pct_change().iloc[-1] * 100
+                spread = (ticker['ask'] - ticker['bid']) / ticker['ask'] * 100
+                
+                health_status[symbol] = {
+                    'volume_change': volume_change,
+                    'price_change': price_change,
+                    'spread': spread,
+                    'liquidity': ticker['baseVolume']
+                }
+                
+                total_volume += ticker['baseVolume']
+                if abs(price_change) > 5:  # تغییرات قیمت شدید
+                    extreme_moves += 1
+                    
+            except Exception as e:
+                self.logger.error(f"Error checking health for {symbol}: {str(e)}")
+                continue
+                
+        # تجمیع نتایج
+        market_health = {
+            'timestamp': datetime.now().isoformat(),
+            'symbol_health': health_status,
+            'total_volume': total_volume,
+            'extreme_moves': extreme_moves,
+            'extreme_move_ratio': extreme_moves / symbol_count if symbol_count > 0 else 0
+        }
+        
+        self.market_health = market_health
+        self.last_health_check = datetime.now()
+        
+        # تصمیم‌گیری بر اساس سلامت بازار
+        if market_health['extreme_move_ratio'] > 0.5:
+            self.logger.warning("High market volatility detected!")
+            self.bot.telegram.send_alert(
+                "⚠️ نوسان بالای بازار شناسایی شد\n\n"
+                f"• تعداد نمادهای پرنوسان: {extreme_moves}/{symbol_count}\n"
+                f"• حجم کل بازار: {total_volume:.2f}\n\n"
+                f"ربات در حالت محافظه‌کارانه قرار گرفته است"
+            )
+            self.bot.config.SWING_SETTINGS['risk_per_trade'] *= 0.7
+            
+        self.logger.info("Market health check completed")
+        return market_health
+        
+    except Exception as e:
+        self.logger.error(f"Error in market health check: {str(e)}")
+        return None
+================ 9-MAIN EXECUTION ================
+if __name__ == "__main__":
+try:
+# تنظیمات اولیه لاگ‌گیری
+logger.setup_logging()
+
+    # ایجاد و اجرای ربات
+    bot = AITradingBot()
+    
+    # ثبت signal handler برای خروج ایمن
+    def signal_handler(sig, frame):
+        bot.logger.info("Received shutdown signal")
+        bot.running = False
+        bot.telegram.send_alert("🔴 ربات به صورت ایمن متوقف شد")
+        sys.exit(0)
+        
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+ # ایجاد و اجرای ربات
+    bot = AITradingBot()
+    
+    # ثبت signal handler برای خروج ایمن
+    def signal_handler(sig, frame):
+        bot.logger.info("Received shutdown signal")
+        bot.running = False
+        bot.telegram.send_alert("🔴 ربات به صورت ایمن متوقف شد")
+        sys.exit(0)
+        
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+def _setup_data_directory(self) -> str:
+    """تنظیم دایرکتوری ذخیره‌سازی داده‌ها"""
+    data_dir = os.path.join(os.path.dirname(__file__), 'ai_trader_data')
+    os.makedirs(data_dir, exist_ok=True)
+    
+    # ایجاد زیردایرکتوری‌ها
+    subdirs = ['ohlcv', 'trades', 'models', 'reports']
+    for subdir in subdirs:
+        os.makedirs(os.path.join(data_dir, subdir), exist_ok=True)
+        
+    return data_dir
+
+def save_ohlcv_data(self, symbol: str, df: pd.DataFrame):
+    """ذخیره داده‌های OHLCV به صورت فایل پارکت"""
+    try:
+        file_path = os.path.join(self.data_dir, 'ohlcv', f'{symbol}.parquet')
+        df.to_parquet(file_path, index=True)
+        self.logger.debug(f"Saved OHLCV data for {symbol}")
+    except Exception as e:
+        self.logger.error(f"Error saving OHLCV data: {str(e)}")
+
+def load_ohlcv_data(self, symbol: str) -> pd.DataFrame:
+    """بارگذاری داده‌های OHLCV"""
+    try:
+        file_path = os.path.join(self.data_dir, 'ohlcv', f'{symbol}.parquet')
+        if os.path.exists(file_path):
+            return pd.read_parquet(file_path)
+        return pd.DataFrame()
+    except Exception as e:
+        self.logger.error(f"Error loading OHLCV data: {str(e)}")
+        return pd.DataFrame()
+
+def save_trade_history(self, history: list):
+    """ذخیره تاریخچه معاملات"""
+    try:
+        file_path = os.path.join(self.data_dir, 'trades', 'history.json')
+        with open(file_path, 'w') as f:
+            json.dump(history, f, indent=4, default=str)
+    except Exception as e:
+        self.logger.error(f"Error saving trade history: {str(e)}")
+
+def load_trade_history(self) -> list:
+    """بارگذاری تاریخچه معاملات"""
+    try:
+        file_path = os.path.join(self.data_dir, 'trades', 'history.json')
+        if os.path.exists(file_path):
+            with open(file_path, 'r') as f:
+                return json.load(f)
+        return []
+    except Exception as e:
+        self.logger.error(f"Error loading trade history: {str(e)}")
+        return []
+
+def save_model(self, model: TradingModel, version: str):
+    """ذخیره مدل یادگیری ماشین"""
+    try:
+        file_path = os.path.join(self.data_dir, 'models', f'model_v{version}.joblib')
+        joblib.dump(model, file_path)
+        self.logger.info(f"Saved model version {version}")
+    except Exception as e:
+        self.logger.error(f"Error saving model: {str(e)}")
+
+def load_model(self, version: str) -> Optional[TradingModel]:
+    """بارگذاری مدل یادگیری ماشین"""
+    try:
+        file_path = os.path.join(self.data_dir, 'models', f'model_v{version}.joblib')
+        if os.path.exists(file_path):
+            return joblib.load(file_path)
+        return None
+    except Exception as e:
+        self.logger.error(f"Error loading model: {str(e)}")
+        return None
+
+def generate_report(self, report_type: str = 'daily') -> dict:
+    """تولید گزارش معاملاتی"""
+    try:
+        generator = self.report_generators.get(report_type)
+        if generator:
+            report = generator()
+            self._save_report(report, report_type)
+            return report
+        raise ValueError(f"Invalid report type: {report_type}")
+    except Exception as e:
+        self.logger.error(f"Error generating {report_type} report: {str(e)}")
+        return {}
+
+def _generate_daily_report(self) -> dict:
+    """تولید گزارش روزانه"""
+    trade_history = self.load_trade_history()
+    today = datetime.now().date()
+    
+    daily_trades = [
+        t for t in trade_history
+        if datetime.fromisoformat(t['timestamp']).date() == today
+    ]
+    
+    if not daily_trades:
+        return {}
+        
+    total_trades = len(daily_trades)
+    winning_trades = sum(1 for t in daily_trades if t['pnl'] > 0)
+    win_rate = (winning_trades / total_trades) * 100 if total_trades > 0 else 0
+    total_pnl = sum(t['pnl'] for t in daily_trades)
+    
+    return {
+        'report_type': 'daily',
+        'date': today.isoformat(),
+        'total_trades': total_trades,
+        'winning_trades': winning_trades,
+        'win_rate': win_rate,
+        'total_pnl': total_pnl,
+        'best_trade': max(t['pnl'] for t in daily_trades),
+        'worst_trade': min(t['pnl'] for t in daily_trades),
+        'trades': daily_trades
+    }
+
+def _generate_weekly_report(self) -> dict:
+    """تولید گزارش هفتگی"""
+    trade_history = self.load_trade_history()
+    now = datetime.now()
+    week_start = now - timedelta(days=now.weekday())
+    
+    weekly_trades = [
+        t for t in trade_history
+        if datetime.fromisoformat(t['timestamp']) >= week_start
+    ]
+    
+    if not weekly_trades:
+        return {}
+        
+    # محاسبات مشابه گزارش روزانه
+    total_trades = len(weekly_trades)
+    winning_trades = sum(1 for t in weekly_trades if t['pnl'] > 0)
+    win_rate = (winning_trades / total_trades) * 100 if total_trades > 0 else 0
+    total_pnl = sum(t['pnl'] for t in weekly_trades)
+    
+    return {
+        'report_type': 'weekly',
+        'start_date': week_start.date().isoformat(),
+        'end_date': now.date().isoformat(),
+        'total_trades': total_trades,
+        'winning_trades': winning_trades,
+        'win_rate': win_rate,
+        'total_pnl': total_pnl,
+        'best_trade': max(t['pnl'] for t in weekly_trades),
+        'worst_trade': min(t['pnl'] for t in weekly_trades),
+        'daily_breakdown': self._daily_breakdown(weekly_trades)
+    }
+
+def _daily_breakdown(self, trades: list) -> dict:
+    """تجزیه عملکرد روزانه"""
+    daily_data = {}
+    for trade in trades:
+        date = datetime.fromisoformat(trade['timestamp']).date().isoformat()
+        if date not in daily_data:
+            daily_data[date] = {
+                'total_trades': 0,
+                'winning_trades': 0,
+                'total_pnl': 0
+            }
+            
+        daily_data[date]['total_trades'] += 1
+        if trade['pnl'] > 0:
+            daily_data[date]['winning_trades'] += 1
+        daily_data[date]['total_pnl'] += trade['pnl']
+        
+    return daily_data
+
+def _save_report(self, report: dict, report_type: str):
+    """ذخیره گزارش در فایل"""
+    try:
+        if not report:
+            return
+            
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        file_path = os.path.join(
+            self.data_dir, 
+            'reports', 
+            f'{report_type}_{timestamp}.json'
+        )
+        
+        with open(file_path, 'w') as f:
+            json.dump(report, f, indent=4, default=str)
+            
+        self.logger.info(f"Saved {report_type} report")
+    except Exception as e:
+        self.logger.error(f"Error saving report: {str(e)}")
+ # ایجاد و اجرای ربات
+    bot = AITradingBot()
+    
+    # ثبت signal handler برای خروج ایمن
+    def signal_handler(sig, frame):
+        bot.logger.info("Received shutdown signal")
+        bot.running = False
+        bot.telegram.send_alert("🔴 ربات به صورت ایمن متوقف شد")
+def calculate_volatility(self, symbol: str, window: int = 14) -> float:
+    """محاسبه نوسان (Volatility) بر اساس ATR"""
+    try:
+        df = self.data_manager.load_ohlcv_data(symbol)
+        if df.empty:
+            return 0.0
+            
+        atr = talib.ATR(df['high'], df['low'], df['close'], timeperiod=window)
+        return atr.iloc[-1] / df['close'].iloc[-1] * 100  # نوسان به درصد
+        
+    except Exception as e:
+        self.logger.error(f"Error calculating volatility: {str(e)}")
+        return 0.0
+
+def detect_market_regime(self, symbol: str) -> str:
+    """تشخیص رژیم بازار (روند/خنثی)"""
+    try:
+        df = self.data_manager.load_ohlcv_data(symbol)
+        if len(df) < 100:
+            return "neutral"
+            
+        # محاسبه ADX
+        adx = talib.ADX(df['high'], df['low'], df['close'], timeperiod=14)
+        last_adx = adx.iloc[-1]
+        
+        if last_adx > 25:  # بازار رونددار
+            # تشخیص جهت روند
+            ma_50 = talib.SMA(df['close'], timeperiod=50)
+            ma_200 = talib.SMA(df['close'], timeperiod=200)
+            
+            if ma_50.iloc[-1] > ma_200.iloc[-1]:
+                return "uptrend"
+            else:
+                return "downtrend"
+        else:
+            return "neutral"
+            
+    except Exception as e:
+        self.logger.error(f"Error detecting market regime: {str(e)}")
+        return "neutral"
+
+def optimize_strategy_params(self, symbol: str) -> dict:
+    """بهینه‌سازی پارامترهای استراتژی با الگوریتم ژنتیک"""
+    try:
+        df = self.data_manager.load_ohlcv_data(symbol)
+        if len(df) < 1000:
+            self.logger.warning("Insufficient data for optimization")
+            return {}
+            
+        # تابع fitness برای بهینه‌سازی
+        def fitness_function(params):
+            try:
+                rsi_period = int(params[0])
+                ma_period = int(params[1])
+                atr_multiplier = params[2]
+                
+                # محاسبه سیگنال‌ها
+                rsi = talib.RSI(df['close'], timeperiod=rsi_period)
+                ma = talib.SMA(df['close'], timeperiod=ma_period)
+                atr = talib.ATR(df['high'], df['low'], df['close'], timeperiod=14)
+                
+                # شبیه‌سازی استراتژی
+                returns = self._simulate_strategy(df, rsi, ma, atr, atr_multiplier)
+                sharpe_ratio = returns.mean() / returns.std() * np.sqrt(365)
+                
+                return sharpe_ratio
+                
+            except Exception as e:
+                self.logger.error(f"Error in fitness calculation: {str(e)}")
+                return 0.0
+                
+        # محدوده پارامترها
+        param_ranges = [
+            (10, 30),    # RSI period
+            (50, 200),   # Moving average period
+            (1.5, 3.0)   # ATR multiplier
+        ]
+        
+        # اجرای الگوریتم ژنتیک
+        optimizer = GA(
+            function=fitness_function,
+            dimension=3,
+            variable_type='real',
+            variable_boundaries=param_ranges
+        )
+        
+        optimizer.run()
+        best_params = optimizer.best_variable
+        
+        return {
+            'rsi_period': int(best_params[0]),
+            'ma_period': int(best_params[1]),
+            'atr_multiplier': best_params[2]
+        }
+        
+    except Exception as e:
+        self.logger.error(f"Error in strategy optimization: {str(e)}")
+        return {}
+
+def _simulate_strategy(self, df: pd.DataFrame, rsi: pd.Series, 
+                      ma: pd.Series, atr: pd.Series, atr_mult: float) -> pd.Series:
+    """شبیه‌سازی استراتژی برای محاسبه بازدهی"""
+    signals = pd.Series(0, index=df.index)
+    positions = pd.Series(0, index=df.index)
+    
+    # تولید سیگنال‌ها
+    long_cond = (df['close'] > ma) & (rsi < 30)
+    short_cond = (df['close'] < ma) & (rsi > 70)
+    
+    signals[long_cond] = 1
+    signals[short_cond] = -1
+    
+    # محاسبه بازدهی
+    entry_price = None
+    returns = []
+    
+    for i in range(1, len(df)):
+        if signals.iloc[i] != 0 and positions.iloc[i-1] == 0:
+            # ورود به معامله
+            entry_price = df['close'].iloc[i]
+            stop_loss = entry_price - atr.iloc[i] * atr_mult if signals.iloc[i] > 0 \
+                       else entry_price + atr.iloc[i] * atr_mult
+            positions.iloc[i:] = signals.iloc[i]
+            
+        elif positions.iloc[i-1] != 0:
+            # خروج از معامله
+            exit_cond = (
+                (df['close'].iloc[i] <= stop_loss and positions.iloc[i-1] > 0) or
+                (df['close'].iloc[i] >= stop_loss and positions.iloc[i-1] < 0)
+            )
+            
+            if exit_cond or i == len(df)-1:
+                exit_price = df['close'].iloc[i]
+                trade_return = (exit_price - entry_price) / entry_price * positions.iloc[i-1]
+                returns.append(trade_return)
+                positions.iloc[i:] = 0
+                
+    return pd.Series(returns)
+def setup(self):
+    """راه‌اندازی نهایی و بهینه‌سازی اولیه"""
+    try:
+        self.logger.info("Running final setup...")
+        
+        # بهینه‌سازی پارامترها برای هر نماد
+        for symbol in self.config.SYMBOLS:
+            optimal_params = self.utils.optimize_strategy_params(symbol)
+            if optimal_params:
+                self.config.STRATEGY_PARAMS[symbol] = optimal_params
+                self.logger.info(f"Optimized params for {symbol}: {optimal_params}")
+        
+        # بارگذاری مدل از دیسک اگر وجود دارد
+        saved_model = self.data_manager.load_model('latest')
+        if saved_model:
+            self.model = saved_model
+            self.logger.info("Loaded pre-trained model from disk")
+        
+        # بررسی سلامت بازار
+        self.utils.check_market_health()
+        
+        self.setup_complete = True
+        self.logger.info("Setup completed successfully")
+        self.telegram.send_alert("✅ ربات آماده به کار است\n\nتمام تنظیمات اولیه با موفقیت انجام شد")
+        
+    except Exception as e:
+        self.logger.error(f"Setup failed: {str(e)}")
+        raise
+    # ایجاد و اجرای ربات
+    bot = AITradingBot()
+    bot.setup()
+    
+    # ثبت signal handler برای خروج ایمن
+    def signal_handler(sig, frame):
+        bot.logger.info("Received shutdown signal")
+        
+        # تولید گزارش نهایی
+        report = bot.data_manager.generate_report('daily')
+        if report:
+            bot.telegram.send_alert(
+                f"📊 گزارش پایانی\n\n"
+                f"تعداد معاملات: {report['total_trades']}\n"
+                f"نرخ برد: {report['win_rate']:.1f}%\n"
+                f"سود خالص: {report['total_pnl']:.2f}%\n"
+                f"بهترین معامله: {report['best_trade']:.2f}%\n"
+                f"بدترین معامله: {report['worst_trade']:.2f}%"
+def __init__(self):
+    super().__init__()
+    self.performance_metrics = {
+        'start_date': datetime.now().isoformat(),
+        'trade_count': 0,
+        'win_rate': 0.0,
+        'avg_profit': 0.0,
+        'max_drawdown': 0.0
+    }
+    self._setup_advanced_features()
+    
+def _setup_advanced_features(self):
+    """تنظیم ویژگی‌های پیشرفته نهایی"""
+    # فعال‌سازی سیستم مانیتورینگ پیشرفته
+    self.monitor = AdvancedMonitor(
+        sample_interval=60,  # هر 1 دقیقه
+        max_memory_usage=80,  # 80% حافظه
+        max_cpu_usage=85     # 85% پردازنده
+    )
+    
+    # تنظیم سیستم پشتیبان‌گیری خودکار
+    self.backup_system = AutoBackup(
+        backup_dir='./backups',
+        interval=timedelta(hours=6),
+        keep_last=5
+    )
+    
+    # فعال‌سازی سیستم یادگیری تطبیقی
+    self.adaptive_learner = AdaptiveLearningSystem(
+        initial_learning_rate=0.001,
+        decay_factor=0.99,
+        min_learning_rate=0.0001
+    )
+
+def shutdown(self):
+    """خاموش کردن ربات به صورت ایمن"""
+    self.logger.info("Starting graceful shutdown...")
+    
+    try:
+        # 1. توقف تمام معاملات در حال انجام
+        self._close_all_positions()
+        
+        # 2. ذخیره وضعیت فعلی مدل
+        self._save_current_state()
+        
+        # 3. تولید گزارش نهایی
+        self._generate_final_report()
+        
+        # 4. توقف تمام سرویس‌های پس‌زمینه
+        self.monitor.stop()
+        self.backup_system.stop()
+        
+        self.logger.info("Shutdown completed successfully")
+        self.telegram.send_alert("🛑 ربات با موفقیت خاموش شد")
+        
+    except Exception as e:
+        self.logger.error(f"Error during shutdown: {str(e)}")
+        self.telegram.send_alert(f"⚠️ خطا در خاموش کردن ربات: {str(e)}")
+
+def _close_all_positions(self):
+    """بستن تمام موقعیت‌های باز"""
+    self.logger.info("Closing all open positions...")
+    for symbol in list(self.exchange.open_positions.keys()):
+        try:
+            self._close_position(symbol, "Shutdown request")
+        except Exception as e:
+            self.logger.error(f"Failed to close {symbol}: {str(e)}")
+
+def _save_current_state(self):
+    """ذخیره وضعیت فعلی سیستم"""
+    self.logger.info("Saving current state...")
+    
+    # ذخیره مدل
+    self.data_manager.save_model(self.model, 'final')
+    
+    # ذخیره تنظیمات
+    self.config.save_to_file('./config/last_config.json')
+    
+    # ذخیره تاریخچه معاملات
+    self.exchange.save_trade_history()
+    
+    # ذخیره وضعیت یادگیری
+    self.adaptive_learner.save_state()
+
+def _generate_final_report(self):
+    """تولید گزارش عملکرد نهایی"""
+    self.logger.info("Generating final performance report...")
+    
+    report = {
+        'performance_metrics': self.performance_metrics,
+        'market_analysis': self.utils.check_market_health(),
+        'model_performance': {
+            'accuracy': self.model.evaluate_current_accuracy(),
+            'features': self.model.get_important_features()
+        },
+        'system_metrics': {
+            'uptime': str(datetime.now() - datetime.fromisoformat(self.performance_metrics['start_date'])),
+            'resource_usage': self.monitor.get_final_report()
+        }
+    }
+    
+    # ذخیره گزارش
+    with open('./reports/final_report.json', 'w') as f:
+        json.dump(report, f, indent=4, default=str)
+        
+    # ارسال خلاصه گزارش
+    self.telegram.send_alert(
+        "📊 گزارش عملکرد نهایی\n\n"
+        f"⏱ زمان فعالیت: {report['system_metrics']['uptime']}\n"
+        f"🔢 تعداد معاملات: {self.performance_metrics['trade_count']}\n"
+        f"📈 نرخ برد: {self.performance_metrics['win_rate']:.1f}%\n"
+        f"💵 میانگین سود: {self.performance_metrics['avg_profit']:.2f}%\n"
+        f"🔄 دقت مدل: {report['model_performance']['accuracy']*100:.1f}%"
+    )
+def start(self):
+    """شروع مانیتورینگ"""
+    self.running = True
+    threading.Thread(target=self._monitor_loop, daemon=True).start()
+    
+def stop(self):
+    """توقف مانیتورینگ"""
+    self.running = False
+    
+def _monitor_loop(self):
+    """حلقه اصلی مانیتورینگ"""
+    while self.running:
+        try:
+            # مانیتورینگ منابع سیستم
+            mem = psutil.virtual_memory().percent
+            cpu = psutil.cpu_percent()
+            
+            # ثبت در لاگ
+            if mem > self.max_memory * 0.8 or cpu > self.max_cpu * 0.8:
+                self.logger.warning(f"High resource usage - CPU: {cpu}%, Mem: {mem}%")
+            
+            # بررسی overload
+            if mem > self.max_memory or cpu > self.max_cpu:
+                self.logger.critical("System overload detected! Initiating emergency protocol")
+                self._handle_overload()
+                
+            time.sleep(self.interval)
+            
+        except Exception as e:
+            self.logger.error(f"Monitoring error: {str(e)}")
+            time.sleep(5)
+
+def _handle_overload(self):
+    """مدیریت شرایط اضافه بار سیستم"""
+    try:
+        # 1. کاهش اولویت پردازش
+        os.nice(10)
+        
+        # 2. آزادسازی حافظه
+        gc.collect()
+        
+        # 3. توقف موقت پردازش‌های غیرضروری
+        # (در اینجا می‌توانید سرویس‌های غیرضروری را متوقف کنید)
+        
+        self.logger.info("System overload handled")
+        
+    except Exception as e:
+        self.logger.error(f"Failed to handle overload: {str(e)}")
+def start(self):
+    """شروع سرویس پشتیبان‌گیری"""
+    self.running = True
+    threading.Thread(target=self._backup_loop, daemon=True).start()
+    
+def stop(self):
+    """توقف سرویس پشتیبان‌گیری"""
+    self.running = False
+    
+def _backup_loop(self):
+    """حلقه اصلی پشتیبان‌گیری"""
+    while self.running:
+        try:
+            self._perform_backup()
+            time.sleep(self.interval.total_seconds())
+        except Exception as e:
+            self.logger.error(f"Backup failed: {str(e)}")
+            time.sleep(60)
+
+def _perform_backup(self):
+    """انجام عملیات پشتیبان‌گیری"""
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    backup_path = os.path.join(self.backup_dir, f'backup_{timestamp}.zip')
+    
+    try:
+        with zipfile.ZipFile(backup_path, 'w') as zipf:
+            # فایل‌های مهم برای پشتیبان‌گیری
+            important_files = [
+                './config/',
+                './ai_trader_data/models/',
+                './ai_trader_data/trades/'
+            ]
+            
+            for file in important_files:
+                if os.path.isdir
+ 
